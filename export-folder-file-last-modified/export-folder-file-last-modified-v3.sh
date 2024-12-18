@@ -1,10 +1,11 @@
 #!/bin/bash
 echo -e "\033[1;33m"
 echo "This script will create an Excel file with the last modified date of all files in the current directory."
-echo -e "\033[1;33m"
+echo -e "\033[0m"
 
 # Vraag of individuele mappen sheets moeten worden aangemaakt
-read -p "Do you want to create individual sheets per folder? (y/n): " create_individual_sheets
+read -p "The first sheet of the Excel file will contain all folders and files, but you also can split the folders into seperate sheets.
+Do you want to create individual sheets per folder? (y/n): " create_individual_sheets
 echo ""
 
 echo "Starting: Please Be Patient, this can take some time for huge folder structures"

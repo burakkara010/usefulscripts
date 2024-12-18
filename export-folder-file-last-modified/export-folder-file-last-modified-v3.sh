@@ -1,11 +1,14 @@
 #!/bin/bash
-echo ""
-echo "Starting: Please Be Patient, this can take some time for huge folder structures"
-echo ""
+echo -e "\033[1;33m"
+echo "This script will create an Excel file with the last modified date of all files in the current directory."
+echo -e "\033[1;33m"
 
 # Vraag of individuele mappen sheets moeten worden aangemaakt
 read -p "Do you want to create individual sheets per folder? (y/n): " create_individual_sheets
 echo ""
+
+echo "Starting: Please Be Patient, this can take some time for huge folder structures"
+
 
 # Genereer een timestamp in het formaat: uur-minuut-dag-maand-jaar
 timestamp=$(date +"%H%M-%d%m-%Y")

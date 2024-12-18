@@ -12,7 +12,7 @@ echo "Starting: Please Be Patient, this can take some time for huge folder struc
 
 
 # Genereer een timestamp in het formaat: uur-minuut-dag-maand-jaar
-timestamp=$(date +"%H%M-%d%m-%Y")
+timestamp=$(date +"%d%m-%Y-%H%M")
 
 # Output Excel-bestand met timestamp
 output_excel="$HOME/Downloads/export-folder-file-last-modified-${timestamp}.xlsx"

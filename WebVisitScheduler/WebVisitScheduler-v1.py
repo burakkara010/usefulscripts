@@ -11,15 +11,17 @@ GREEN = "\033[32m"
 RED = "\033[31m"
 RESET = "\033[0m"
 
-print(f"{GREEN}<><><><><><><><><><><><><><><><><><><><><><><><>{RESET}")
-print(f"{GREEN}<><> Thanks for using {appname} {version} <><>{RESET}")
-print(f"{GREEN}<><><><><><><><><>><><><><><><><><><><><><><><>{RESET}")
+print(f"\n")
+print(f"{GREEN} ><><><><><><><><><><><><><><><><><><><><><><{RESET}")
+print(f"{GREEN}   Thanks for using {appname} {version}  {RESET}")
+print(f"{GREEN} ><><><><><><><><><><><><><><><><><><><><><><{RESET}")
 print(f"Author: Burak Kara")
+print(f"\n")
 
 
 
 # Configuratie
-URL = input("Please enter the URL of the website (including http:// or https://): ")
+URL = input("Please enter the URL of the website \n(including http:// or https://): ")
 AMOUNT_VISITS = 5  # Amount of times to visit the website per cycle
 INTERVAL_CYCLES = 5  # Interval between cycles in minutes
 TIME_SLEEP = 10  # Pause between individual visits in seconds

@@ -41,9 +41,9 @@ def log(message):
     # Print to console
     print(f"[{timestamp}] {message}")
 
-def countdown_timer(tijd_in_seconden, message):
+def countdown_timer(time_in_seconds, message):
     """Shows a countdown timer in the same log line.""" 
-    for remaining in range(tijd_in_seconden, 0, -1):
+    for remaining in range(time_in_seconds, 0, -1):
         print(f"\r{message} Wait for {remaining} seconds...", end="")
         time.sleep(1)
     print(f"\r{message} Next step starts now..!              ")  # Clears the line

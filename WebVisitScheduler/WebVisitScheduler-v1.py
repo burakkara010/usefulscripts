@@ -3,16 +3,28 @@ import time
 import os
 from datetime import datetime
 
-# Configuratie
-URL = "https://www.google.com"  # Change this to your web-app URL including http:// or https://
-AMOUNT_VISITS = 5  # Amount of times to visit the website per cycle
-INTERVAL_CYCLES = 5  # Interval between cycles in minutes
-TIME_SLEEP = 10  # Pause between individual visits in seconds
+appname = "WebVisitScheduler"
+version = "v1.0"
 
 # ANSI escape codes voor kleur
 GREEN = "\033[32m"
 RED = "\033[31m"
 RESET = "\033[0m"
+
+print(f"{GREEN}<><><><><><><><><><><><><><><><><><><><><><><><>{RESET}")
+print(f"{GREEN}<><> Thanks for using {appname} {version} <><>{RESET}")
+print(f"{GREEN}<><><><><><><><><>><><><><><><><><><><><><><><>{RESET}")
+print(f"Author: Burak Kara")
+
+
+
+# Configuratie
+URL = input("Please enter the URL of the website (including http:// or https://): ")
+AMOUNT_VISITS = 5  # Amount of times to visit the website per cycle
+INTERVAL_CYCLES = 5  # Interval between cycles in minutes
+TIME_SLEEP = 10  # Pause between individual visits in seconds
+
+
 
 def get_logfile_name():
     """Generate the log file name based on the current year and month."""  

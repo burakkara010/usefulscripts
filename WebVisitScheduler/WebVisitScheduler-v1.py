@@ -18,21 +18,22 @@ print(f"{GREEN} ><><><><><><><><><><><><><><><><><><><><><><{RESET}")
 print(f"Author: Burak Kara")
 print(f"\n")
 
+# Date Variables
+month_number = datetime.now().month  # Month number
+year = datetime.now().year # Year
 
-
-# Configuratie
+# Script Variables
 URL = input("Please enter the URL of the website \n(including http:// or https://): ")
 AMOUNT_VISITS = 5  # Amount of times to visit the website per cycle
 INTERVAL_CYCLES = 5  # Interval between cycles in minutes
 TIME_SLEEP = 10  # Pause between individual visits in seconds
+LOG_LOCATION = os.path.expanduser(f"~/Downloads/WebVisitScheduler/{URL}/{year}-Month-{month_number}-WebVisitScheduler-output.txt") # Log file path
 
 
 
 def get_logfile_name():
     """Generate the log file name based on the current year and month."""  
-    month_number = datetime.now().month  # Month number
-    year = datetime.now().year # Year
-    log_path = os.path.expanduser(f"~/Downloads/WebVisitScheduler/{URL}/{year}-Month-{month_number}-WebVisitScheduler-output.txt") # Log file path
+    log_path = LOG_LOCATION
     return log_path
 
 def log(message):

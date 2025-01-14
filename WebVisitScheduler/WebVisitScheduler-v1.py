@@ -53,7 +53,7 @@ def visit_website(url, amount_visits):
         try:
             response = requests.get(url, timeout=10)
             if response.status_code == 200:
-                log(f"{GREEN}Visit {i+1}: Website Successful visited{RESET}")
+                log(f"{GREEN}Visit {i+1}: {URL} Successful visited !!{RESET}")
             else:
                 log(f"{RED}Visit {i+1}: Problem with website. Statuscode: {response.status_code}{RESET}")
         except requests.exceptions.RequestException as e:
@@ -68,7 +68,8 @@ def countdown_timer_cycle(time_in_seconds):
 
 def main():
     while True:
-        log("Start new cycle...")
+        log("New Cycle started...")
+        log(f"Cycle for website: {URL}")
         visit_website(URL, AMOUNT_VISITS)
         countdown_timer_cycle(INTERVAL_CYCLES * 60)  # Countdown voor de wachttijd van 1 minuut
 

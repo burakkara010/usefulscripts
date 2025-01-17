@@ -1,7 +1,6 @@
 # UsefulScripts
 
-Index:
-FileModExporter = Bash script which exports all files on a certain location based on last modified date
+A **collection** of scripts designed to simplify and automate various tasks. Each script is created to solve specific problems efficiently. Below is the index of available scripts:
 
 ||Script|Description|
 |--|--|--|

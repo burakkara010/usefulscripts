@@ -6,21 +6,49 @@ echo -e "\033[1;33m"
 echo "This script will create an Excel file with the last modified date and file sizes of all files in the current directory, including nested folders."
 echo -e "\033[0m"
 
-# Vraag of individuele mappen sheets moeten worden aangemaakt
+########### Vraag of individuele mappen sheets moeten worden aangemaakt
 read -p "The first sheet of the Excel file will contain all folders and files, but you also can split the folders into separate sheets.
 Do you want to create individual sheets per folder? (y/n): " create_individual_sheets
 echo ""
 
 echo "Starting: Please Be Patient, this can take some time for huge folder structures"
-echo "especially when scanning if individual sheets are created."
+echo "especially when scanning cloud fileshares or if individual sheets are created."
 
-# Genereer een timestamp in het formaat: uur-minuut-dag-maand-jaar
+
+
+########### Animatie: Scanning folders and files ...
+function animate_dots() {
+    local dots=0
+    local max_dots=3
+    while :; do
+        dots=$(( (dots + 1) % (max_dots + 1) ))
+        echo -ne "\rScanning folders and files $(printf '.%.0s' $(seq 1 $dots))   " # Puntjes oplichten
+        sleep 0.5
+    done
+}
+
+########### Start de animatie in een achtergrondproces
+animate_dots &
+anim_pid=$!  # Sla het proces-ID op
+
+########### Tijdelijke simulatie van werk (vervang dit met je echte logica)
+sleep 5  # Tijdelijk wachten om de animatie te testen
+
+########### Stop de animatie zodra het werk klaar is
+kill "$anim_pid" &>/dev/null
+wait "$anim_pid" 2>/dev/null
+
+echo -ne "\rScanning complete!                          \n"
+
+
+
+########### Genereer een timestamp in het formaat: uur-minuut-dag-maand-jaar
 timestamp=$(date +"%d%m-%Y-%H%M")
 
-# Output Excel-bestand met timestamp
+########### Output Excel-bestand met timestamp
 output_excel="$HOME/Downloads/export-folder-file-last-modified-${timestamp}.xlsx"
 
-# Vereist: Python met xlsxwriter en tqdm
+########### Vereist: Python met xlsxwriter en tqdm
 if ! python3 -c "import xlsxwriter" &>/dev/null; then
     echo "Python 'xlsxwriter' module not found. Install with: pip3 install xlsxwriter"
     exit 1
@@ -31,7 +59,7 @@ if ! python3 -c "import tqdm" &>/dev/null; then
     exit 1
 fi
 
-# Maak een Python-script dat Excel genereert
+########### Maak een Python-script dat Excel genereert
 cat <<EOF > /tmp/export-folder-file-last-modified.py
 import os
 import time
@@ -113,12 +141,12 @@ workbook.close()
 print(f"Excel-File Created: {output_file}")
 EOF
 
-# Choice to create individual sheets
+########### Choice to create individual sheets
 if [[ "$create_individual_sheets" =~ ^[yY](es)?$ ]]; then
     export CREATE_INDIVIDUAL_SHEETS="y"
 else
     export CREATE_INDIVIDUAL_SHEETS="n"
 fi
 
-# Run the Python script
+########### Run the Python script
 python3 /tmp/export-folder-file-last-modified.py

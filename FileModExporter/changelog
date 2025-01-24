@@ -1,0 +1,19 @@
+[v4.0.0] - 2025-01-24
+Added
+Dynamic Progress Bar:
+
+Implemented a progress bar using tqdm to display real-time progress while processing files. The progress bar updates with each file and provides a smooth user experience.
+Automatically counts the total number of files beforehand to calculate accurate progress.
+File Size Formatting:
+
+Added dynamic file size formatting for better readability:
+Files < 1 KB: Displayed in bytes (B).
+Files < 1 GB: Displayed in kilobytes (KB) or megabytes (MB).
+Files < 1 TB: Displayed in gigabytes (GB).
+Individual Sheets Per Folder:
+
+Added functionality to create individual Excel sheets for each folder when the user selects y or yes at the prompt.
+Individual sheets include Filename, File Size, and Last Modified Date columns.
+Environment Variable Support:
+
+Added support for the CREATE_INDIVIDUAL_SHEETS environment variable to manage the creation of individual folder sheets without user interaction.

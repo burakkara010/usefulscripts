@@ -19,7 +19,7 @@ echo "especially when scanning cloud fileshares or if individual sheets are crea
 ########### Animatie: Scanning folders and files ...
 function animate_dots() {
     local dots=0
-    local max_dots=3
+    local max_dots=4
     while :; do
         dots=$(( (dots + 1) % (max_dots + 1) ))
         echo -ne "\rScanning folders and files $(printf '.%.0s' $(seq 1 $dots))   " # Puntjes oplichten
@@ -32,13 +32,13 @@ animate_dots &
 anim_pid=$!  # Sla het proces-ID op
 
 ########### Tijdelijke simulatie van werk (vervang dit met je echte logica)
-sleep 5  # Tijdelijk wachten om de animatie te testen
+sleep 3  # Tijdelijk wachten om de animatie te testen
 
 ########### Stop de animatie zodra het werk klaar is
 kill "$anim_pid" &>/dev/null
 wait "$anim_pid" 2>/dev/null
 
-echo -ne "\rScanning complete!                          \n"
+echo -ne "\rScanning complete!                          \n" 
 
 
 

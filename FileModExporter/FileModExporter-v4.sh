@@ -38,7 +38,7 @@ sleep 3  # Tijdelijk wachten om de animatie te testen
 kill "$anim_pid" &>/dev/null
 wait "$anim_pid" 2>/dev/null
 
-echo -ne "\rScanning complete!                          \n" 
+echo -ne "\rScanning complete! The export will begin soon!                         \n" 
 
 
 

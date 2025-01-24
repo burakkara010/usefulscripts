@@ -1,9 +1,9 @@
 #!/bin/bash
 echo -e "\033[1;32m"
-echo "script: export-folder-file-last-modified-v3.sh"
+echo "script: export-folder-file-last-modified-v4.sh"
 echo -e "\033[0m"
 echo -e "\033[1;33m"
-echo "This script will create an Excel file with the last modified date of all files in the current directory, including nested folders."
+echo "This script will create an Excel file with the last modified date and file sizes of all files in the current directory, including nested folders."
 echo -e "\033[0m"
 
 # Vraag of individuele mappen sheets moeten worden aangemaakt
@@ -12,6 +12,7 @@ Do you want to create individual sheets per folder? (y/n): " create_individual_s
 echo ""
 
 echo "Starting: Please Be Patient, this can take some time for huge folder structures"
+echo "especially when scanning if individual sheets are created."
 
 # Genereer een timestamp in het formaat: uur-minuut-dag-maand-jaar
 timestamp=$(date +"%d%m-%Y-%H%M")
@@ -37,8 +38,22 @@ import time
 import xlsxwriter
 from tqdm import tqdm  # for the progress bar
 
+# Function to format file size dynamically
+def format_file_size(size_in_bytes):
+    if size_in_bytes < 1024:
+        return f"{size_in_bytes} B"
+    elif size_in_bytes < 1024**2:
+        return f"{size_in_bytes / 1024:.2f} KB"
+    elif size_in_bytes < 1024**3:
+        return f"{size_in_bytes / 1024**2:.2f} MB"
+    else:
+        return f"{size_in_bytes / 1024**3:.2f} GB"
+
 # Output file
 output_file = os.path.expanduser("${output_excel}")
+
+# Count total files for progress bar
+total_files = sum([len(files) for _, _, files in os.walk(".")])
 
 # Create an Excel workbook
 workbook = xlsxwriter.Workbook(output_file)
@@ -47,20 +62,27 @@ workbook = xlsxwriter.Workbook(output_file)
 worksheet_all = workbook.add_worksheet("All Folders & Files")
 worksheet_all.write(0, 0, "Folder")
 worksheet_all.write(0, 1, "Filename")
-worksheet_all.write(0, 2, "Last Modified Date")
+worksheet_all.write(0, 2, "File Size")
+worksheet_all.write(0, 3, "Last Modified Date")
 
 # Add files from all folders, including nested folders, to the "All Folders & Files" sheet
 row_all = 1
-for root, dirs, files in tqdm(os.walk("."), desc="Processing folders", unit="folder"):
+progress_bar = tqdm(total=total_files, desc="Processing files", unit="file")
+for root, dirs, files in os.walk("."):
     folder = os.path.relpath(root, start=".")  # Relatief pad naar huidige folder
     for file in files:
         filepath = os.path.join(root, file)
         last_modified = os.path.getmtime(filepath)
         last_modified_date = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(last_modified))
+        file_size = os.path.getsize(filepath)
+        formatted_size = format_file_size(file_size)
         worksheet_all.write(row_all, 0, folder)
         worksheet_all.write(row_all, 1, file)
-        worksheet_all.write(row_all, 2, last_modified_date)
+        worksheet_all.write(row_all, 2, formatted_size)
+        worksheet_all.write(row_all, 3, last_modified_date)
         row_all += 1
+        progress_bar.update(1)  # Update progress bar for each file
+progress_bar.close()
 
 # Ask if individual folder sheets should be created
 create_individual_sheets = os.environ.get("CREATE_INDIVIDUAL_SHEETS", "n").lower() in ["y", "yes"]
@@ -73,14 +95,18 @@ if create_individual_sheets:
             continue
         worksheet = workbook.add_worksheet(folder[:31])  # Max 31 tekens voor sheet-namen
         worksheet.write(0, 0, "Filename")
-        worksheet.write(0, 1, "Last Modified Date")
+        worksheet.write(0, 1, "File Size")
+        worksheet.write(0, 2, "Last Modified Date")
 
         for row, file in enumerate(files, start=1):
             filepath = os.path.join(root, file)
             last_modified = os.path.getmtime(filepath)
             last_modified_date = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(last_modified))
+            file_size = os.path.getsize(filepath)
+            formatted_size = format_file_size(file_size)
             worksheet.write(row, 0, file)
-            worksheet.write(row, 1, last_modified_date)
+            worksheet.write(row, 1, formatted_size)
+            worksheet.write(row, 2, last_modified_date)
 
 # Save the Excel file
 workbook.close()

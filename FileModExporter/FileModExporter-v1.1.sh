@@ -1,6 +1,6 @@
 #!/bin/bash
 echo -e "\033[1;32m"
-echo "script: export-folder-file-last-modified-v4.sh"
+echo "script: export-folder-file-last-modified-v1.1.sh"
 echo -e "\033[0m"
 echo -e "\033[1;33m"
 echo "This script will create an Excel file with the last modified date and file sizes of all files in the current directory, including nested folders."

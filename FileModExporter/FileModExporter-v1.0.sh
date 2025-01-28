@@ -1,6 +1,6 @@
 #!/bin/bash
 echo -e "\033[1;32m"
-echo "script: export-folder-file-last-modified-v3.sh"
+echo "script: export-folder-file-last-modified-v1.0.sh"
 echo -e "\033[0m"
 echo -e "\033[1;33m"
 echo "This script will create an Excel file with the last modified date of all files in the current directory."

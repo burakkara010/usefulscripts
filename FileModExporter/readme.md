@@ -8,4 +8,7 @@ Usage:
 2. If you're running on linux/mac make the script executable by: chmod +X <scriptpath>
 3. Run the script and wait until it finishes with the export
 
-Created By: Burak Kara
+For the latest updates, check out the [CHANGELOG](./CHANGELOG.md).
+
+
+

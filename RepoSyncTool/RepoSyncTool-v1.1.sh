@@ -27,22 +27,30 @@ defaultBranch="main"
 maxdepth=3
 
 # Ask user which branch to pull from
-color_echo "\033[33mWhich branch do you want to pull from these repositories? \n1: Manual Branch or leave empty for only \"main\" \n2: All branches (Automatic Scan)\033[0m"
+color_echo "\033[33mWhich branch do you want to pull from these repositories? \n1: Manual Branch or only \"main\" \n2: All branches (Automatic Scan)\033[0m"
 read -p "Please make a choice and press Enter: " branchOption
 
 # Ask user for the target branch
 targetBranch="$defaultBranch"
 if [[ "$branchOption" == "1" ]]; then
-    read -p "Enter the branch you want to pull updates from (default: ${defaultBranch}): " inputBranch
+    read -p "Enter the branch you want to pull updates from 
+    Leave empty for (default: ${defaultBranch}): " inputBranch
     if [[ -n "$inputBranch" ]]; then
         targetBranch="$inputBranch"
     fi
 fi
 color_echo "\n\033[33mYou have chosen to pull updates from the '${targetBranch}' branch.\033[0m"
 
-color_echo "\n\033[33mThe script will start in 5 seconds...\033[0m"
-sleep 5
-color_echo "\n\033[33mStarting the script...\033[0m"
+# Countdown timer 
+color_echo "\n\033[33m"
+for i in {5..1}
+do
+    echo -ne "The script will start in $i second$([ $i -eq 1 ] || echo 's')...   \r"
+    sleep 1
+done
+color_echo "Starting the script...\033[0m"
+
+
 
 pullAllBranches=false
 if [[ "$branchOption" == "2" ]]; then
@@ -106,7 +114,7 @@ else
                 branches=$(git branch -r | grep -v HEAD | sed 's/origin\///')
                 
                 for branch in $branches; do
-                    color_echo "\n\033[36mPulling branch '$branch'...\033[0m"
+                    color_echo "\n\033[36mPulling repository '$(basename "$d")' branch '$branch'...\033[0m"
                     git checkout "$branch" && git pull
                 done
             )

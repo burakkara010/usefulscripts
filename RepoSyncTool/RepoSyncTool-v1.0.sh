@@ -1,4 +1,6 @@
 #This script is designed to update all git repositories in the current directory to the main branch.
+#Description:
+#This script will check all directories in the current directory for git repositories and update them to the specified branch.
 #It works on both Windows and Mac/Linux systems.
 #Go to the directory where the repositories are located and run this script.
 #Make sure you have the necessary permissions to run this script.

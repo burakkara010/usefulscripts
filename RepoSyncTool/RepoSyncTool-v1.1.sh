@@ -14,7 +14,7 @@ color_echo() {
 }
 
 color_echo "\033[1;32m"
-echo "script: RepoSyncTool-v1.0.sh"
+echo "script: RepoSyncTool-v1.1.sh"
 color_echo "\033[0m"
 color_echo "\033[1;33m"
 echo "This script will update all git repositories in the current directory to a specific branch or all branches."

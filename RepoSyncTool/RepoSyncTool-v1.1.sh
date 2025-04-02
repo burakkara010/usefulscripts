@@ -33,7 +33,8 @@ read -p "Please make a choice and press Enter: " branchOption
 # Ask user for the target branch
 targetBranch="$defaultBranch"
 if [[ "$branchOption" == "1" ]]; then
-    read -p "Enter the branch you want to pull updates from or
+    read -p "
+    Enter the branch you want to pull updates from or
     Leave empty for (default: ${defaultBranch}): " inputBranch
     if [[ -n "$inputBranch" ]]; then
         targetBranch="$inputBranch"

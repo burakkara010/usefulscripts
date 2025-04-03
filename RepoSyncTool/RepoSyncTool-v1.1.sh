@@ -33,18 +33,18 @@ read -p "Please make a choice and press Enter: " branchOption
 # Ask user for the target branch
 targetBranch="$defaultBranch"
 if [[ "$branchOption" == "1" ]]; then
-    read -p "Enter the branch you want to pull updates from or
+    read -p "
+    Enter the branch you want to pull updates from or
     Leave empty for (default: ${defaultBranch}): " inputBranch
     if [[ -n "$inputBranch" ]]; then
         targetBranch="$inputBranch"
     fi
     color_echo "\n\033[33mYou have chosen to pull updates from the '${targetBranch}' branch.\033[0m"
 elif [[ "$branchOption" == "2" ]]; then
-    color_echo "\n\033[33mYou have chosen to pull updates from all branches.\033[0m"
-else
-    color_echo "\n\033[31mInvalid option selected. Please run the script again and choose a valid option.\033[0m"
-    exit 1
+    color_echo "\n\033[33mYou have chosen to pull updates from all branches\033[0m"
+    git branch -a
 fi
+
 
 # Countdown timer 
 color_echo "\n\033[33m"

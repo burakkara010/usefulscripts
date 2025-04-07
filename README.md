@@ -1,6 +1,6 @@
-# UsefulScripts
-
-A **collection** of scripts designed to simplify and automate various tasks. Each script is created to solve specific problems efficiently. Below is the index of available scripts:
+Useful Scripts
+============
+This repository contains a collection of scripts designed to streamline and automate various tasks. Each script is created to address specific challenges efficiently. Below is the index of available scripts:
 
 ||Script|Type|Description|Works on|
 |--|--|--|--|--|

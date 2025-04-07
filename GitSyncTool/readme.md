@@ -8,7 +8,7 @@ Windows and Mac/Linux**
 
 Usage:
 1. Go to the desired folder where the repositories are. (The folder can contain more folders inside as the script will scan all those git repositories automatically.)
-2. If you're running on linux/mac make the script executable by: chmod +X <scriptpath>
-3. Run the script and wait until it finishes with the export
+2. If you're running on Mac/Linux make the script executable by: chmod +X <scriptpath>
+3. Run the script and wait until it finishes with all branch updates
 
 For the latest updates, check out the [CHANGELOG](./changelog.md).

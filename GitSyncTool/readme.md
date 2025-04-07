@@ -1,7 +1,7 @@
-<a href="https://github.com/burakkara010/usefulscripts/tree/main/RepoSyncTool"><img src="https://github.com/user-attachments/assets/9494400b-2aaf-4cea-a6a4-d4a3c1dc4f55" width="100" align="left" /></a>
+<a href="https://github.com/burakkara010/usefulscripts/tree/main/GitSyncTool"><img src="https://github.com/user-attachments/assets/9494400b-2aaf-4cea-a6a4-d4a3c1dc4f55" width="100" align="left" /></a>
 <br/>
 
-**RepoSyncTool** is a **Bash script** scans a current directory and scans and updates git branches automatically 
+**GitSyncTool** is a **Bash script** scans a current directory and scans and updates git branches automatically 
 
 **Works on:
 Windows and Mac/Linux**

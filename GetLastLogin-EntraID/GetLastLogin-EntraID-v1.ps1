@@ -1,7 +1,7 @@
 #!/usr/bin/env pwsh
 # GetLastLogin-EntraID.ps1
 # - Connects to Azure (Az) + Microsoft Graph
-# - Reads an Excel file named Userlist.xlsx (with Useraccount + UPN column)
+# - Reads an Excel file named Userlist.xlsx (with a Useraccount column)
 # - Adds/updates a LastLoginDate column with Entra ID last sign-in timestamp
 #
 # Userlist.xlsx location (default search order when you press Enter at the prompt):
@@ -11,7 +11,16 @@
 #
 # Excel requirements:
 # - The first column should be named 'Useraccount' and must contain at least an Entra ID username.
-# - A UPN column is required for the lookup (supported names: 'User Principal Name (UPN)', 'UPN', 'UserPrincipalName').
+# - Lookup is performed using the values in the 'Useraccount' column (UPN or user id work best).
+
+[CmdletBinding()]
+param(
+    # Runs the full workflow in one go: Connect-AzAccount -> Connect-MgGraph -> Update Excel.
+    [switch]$RunSequence,
+
+    # Optional Excel path. If omitted, the script uses its default search/prompt behavior.
+    [string]$ExcelPath
+)
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
@@ -55,6 +64,68 @@ function Ensure-PowerShellModule([string]$Name) {
         Install-Module -Name $Name -Scope CurrentUser -Force -AllowClobber
     } catch {
         throw "Failed to install module '$Name': $($_.Exception.Message)"
+    }
+}
+
+function Get-MsalCacheCandidatePaths {
+    $paths = New-Object System.Collections.Generic.List[string]
+
+    if ($env:HOME) {
+        # Linux (common)
+        $paths.Add((Join-Path -Path $env:HOME -ChildPath '.local/share/.IdentityService/msal.cache.cae'))
+        # Fallbacks some environments may use
+        $paths.Add((Join-Path -Path $env:HOME -ChildPath '.IdentityService/msal.cache.cae'))
+    }
+
+    if ($IsWindows) {
+        if ($env:LOCALAPPDATA) {
+            $paths.Add((Join-Path -Path $env:LOCALAPPDATA -ChildPath '.IdentityService\msal.cache.cae'))
+        }
+        if ($env:USERPROFILE) {
+            $paths.Add((Join-Path -Path $env:USERPROFILE -ChildPath '.IdentityService\msal.cache.cae'))
+        }
+    }
+
+    if ($IsMacOS -and $env:HOME) {
+        $paths.Add((Join-Path -Path $env:HOME -ChildPath 'Library/Application Support/.IdentityService/msal.cache.cae'))
+    }
+
+    return @($paths | Select-Object -Unique)
+}
+
+function Test-IsMsalCacheDeserializationError {
+    param(
+        [Parameter(Mandatory=$true)][string]$Message
+    )
+
+    return (
+        $Message -match 'MSAL deserialization failed to parse the cache contents' -or
+        $Message -match 'TokenCacheJsonSerializer\.Deserialize' -or
+        $Message -match 'Microsoft\.Identity\.Json\.JsonReaderException'
+    )
+}
+
+function Clear-LocalMsalTokenCache {
+    $candidates = Get-MsalCacheCandidatePaths
+    $foundAny = $false
+
+    foreach ($p in $candidates) {
+        if (-not (Test-Path -LiteralPath $p)) { continue }
+        $foundAny = $true
+
+        $timestamp = Get-Date -Format 'yyyyMMdd-HHmmss'
+        $backup = "$p.bak-$timestamp"
+        try {
+            Copy-Item -LiteralPath $p -Destination $backup -Force
+            Remove-Item -LiteralPath $p -Force
+            Write-Host "Cleared MSAL cache: $p (backup: $backup)" -ForegroundColor Yellow
+        } catch {
+            throw "Failed to clear MSAL cache '$p': $($_.Exception.Message)"
+        }
+    }
+
+    if (-not $foundAny) {
+        Write-Host 'No MSAL cache file found to clear.' -ForegroundColor DarkGray
     }
 }
 
@@ -107,6 +178,7 @@ function Connect-Graph {
 
     # Best effort: if already connected with Az, reuse that session to obtain a Graph access token.
     # This avoids browser/device-code timeouts in headless environments.
+    # Note: if the resulting token cannot access signInActivity (Forbidden), we will fall back to a scoped Connect-MgGraph.
     if (Get-Command Get-AzAccessToken -ErrorAction SilentlyContinue) {
         try {
             $azCtx2 = Get-AzContext -ErrorAction SilentlyContinue
@@ -127,9 +199,32 @@ function Connect-Graph {
         }
     }
 
-    # If not connected yet, do a normal connect.
+    function Test-CanReadSignInActivity {
+        try {
+            $ctxLocal = Get-MgContext
+            if (-not $ctxLocal -or -not $ctxLocal.Account) { return $false }
+
+            $encodedAccount = [System.Uri]::EscapeDataString([string]$ctxLocal.Account)
+            $testUri = "https://graph.microsoft.com/v1.0/users/${encodedAccount}?`$select=id,signInActivity"
+            Invoke-MgGraphRequest -Method GET -Uri $testUri | Out-Null
+            return $true
+        } catch {
+            $m = $_.Exception.Message
+            if ($m -match 'Forbidden') { return $false }
+            # Non-forbidden errors (transient, not found etc.) shouldn't block auth.
+            return $true
+        }
+    }
+
+    # If we are connected but cannot read signInActivity (Forbidden), disconnect and do a normal connect.
     $mgExisting = $null
     try { $mgExisting = Get-MgContext } catch { $mgExisting = $null }
+    if (($mgExisting -and $mgExisting.Account) -and (-not (Test-CanReadSignInActivity))) {
+        Write-Host 'Connected to Graph, but token cannot access sign-in activity (Forbidden). Re-authenticating with requested scopes...' -ForegroundColor Yellow
+        try { Disconnect-MgGraph | Out-Null } catch { }
+        $mgExisting = $null
+    }
+
     if (-not ($mgExisting -and $mgExisting.Account)) {
         $maxAttempts = 3
         for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
@@ -149,19 +244,41 @@ function Connect-Graph {
                     }
                 }
 
+                if (-not (Test-CanReadSignInActivity)) {
+                    throw 'Forbidden: connected but missing permission/role to read signInActivity.'
+                }
+
                 break
             } catch {
                 $msg = $_.Exception.Message
+
+                if (Test-IsMsalCacheDeserializationError -Message $msg) {
+                    Write-Host 'Authentication failed due to a local MSAL token cache parsing error.' -ForegroundColor Yellow
+                    Write-Host 'This is usually fixed by clearing the local MSAL cache and signing in again.' -ForegroundColor Yellow
+                    $doClear = Read-YesNoPrompt 'Clear local MSAL token cache now and retry authentication?'
+                    if ($doClear) {
+                        Clear-LocalMsalTokenCache
+                        continue
+                    }
+                }
+
                 if ($msg -match 'timed out' -and $attempt -lt $maxAttempts) {
                     Write-Host ("Authentication timed out. Retrying ($attempt/$maxAttempts)...") -ForegroundColor Yellow
                     continue
+                }
+                if ($msg -match 'Forbidden') {
+                    throw "Connect-MgGraph succeeded but reading sign-in activity is Forbidden. Ensure admin consent for Graph delegated permissions ($($scopes -join ', ')) and that your signed-in account has a role like Reports Reader / Security Reader / Global Reader (or higher)."
                 }
                 throw "Connect-MgGraph failed: $msg"
             }
         }
     }
 
-    Select-MgProfile -Name 'v1.0' | Out-Null
+    # Newer Microsoft Graph PowerShell versions may not include Select-MgProfile.
+    # We avoid relying on profiles and instead call explicit v1.0/beta endpoints where needed.
+    if (Get-Command Select-MgProfile -ErrorAction SilentlyContinue) {
+        Select-MgProfile -Name 'v1.0' | Out-Null
+    }
 
     $mg = Get-MgContext
     if (-not $mg -or -not $mg.Account) {
@@ -188,7 +305,9 @@ function Resolve-ExcelPath {
         }
 
         if (-not $IsWindows -and $env:HOME) {
+            # Some Linux distros use lowercase 'downloads'. Check both.
             $candidates.Add((Join-Path -Path $env:HOME -ChildPath 'Downloads/Userlist.xlsx'))
+            $candidates.Add((Join-Path -Path $env:HOME -ChildPath 'downloads/Userlist.xlsx'))
         }
 
         foreach ($candidate in $candidates) {
@@ -224,21 +343,83 @@ function Resolve-UpnColumnName {
     throw "UPN column not found. Expected one of: $($candidates -join ', ')"
 }
 
+function Resolve-EntraUserLookupKey {
+    param(
+        [Parameter(Mandatory=$true)][string]$Useraccount
+    )
+
+    $value = $Useraccount.Trim()
+    if ([string]::IsNullOrWhiteSpace($value)) { return $null }
+
+    # If it already looks like a UPN or object id, we can use it directly with /users/{id-or-upn}.
+    if ($value -match '@') { return $value }
+    if ($value -match '^[0-9a-fA-F]{8}-([0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}$') { return $value }
+
+    # Otherwise, attempt to resolve common account-name fields (hybrid / service accounts).
+    $escaped = $value.Replace("'", "''")
+
+    $filtersToTry = @(
+        "onPremisesSamAccountName eq '$escaped'",
+        "mailNickname eq '$escaped'"
+    )
+
+    foreach ($filterExpr in $filtersToTry) {
+        $filterEncoded = [System.Uri]::EscapeDataString($filterExpr)
+        $uri = "https://graph.microsoft.com/v1.0/users?`$filter=${filterEncoded}&`$select=id,userPrincipalName"
+        $resp = $null
+        try {
+            $resp = Invoke-MgGraphRequest -Method GET -Uri $uri
+        } catch {
+            continue
+        }
+
+        if ($resp -and $resp.value -and $resp.value.Count -ge 1) {
+            if ($resp.value.Count -gt 1) {
+                throw "Multiple users matched '$value' using filter '$filterExpr'. Please use a unique UPN or object id in 'Useraccount'."
+            }
+
+            $match = $resp.value[0]
+            if ($match.id) { return [string]$match.id }
+            if ($match.userPrincipalName) { return [string]$match.userPrincipalName }
+        }
+    }
+
+    # Fall back to original value; the caller will surface a Graph error if it can't be resolved.
+    return $value
+}
+
 function Get-EntraLastSignInDateTime {
     param(
         [Parameter(Mandatory=$true)][string]$Upn
     )
 
-    # Use Graph endpoint with $select=signInActivity.
     # signInActivity can be empty for accounts that never signed in.
-    $encoded = [System.Uri]::EscapeDataString($Upn)
-    $uri = "/users/$encoded?`$select=userPrincipalName,signInActivity"
+    # Depending on tenant/features, signInActivity may not be available in v1.0.
+    # We try v1.0 first and fall back to beta if necessary.
+    $lookupKey = Resolve-EntraUserLookupKey -Useraccount $Upn
+    if ([string]::IsNullOrWhiteSpace($lookupKey)) { return $null }
 
+    $encoded = [System.Uri]::EscapeDataString($lookupKey)
+    $v1Uri = "https://graph.microsoft.com/v1.0/users/${encoded}?`$select=userPrincipalName,signInActivity"
+    $betaUri = "https://graph.microsoft.com/beta/users/${encoded}?`$select=userPrincipalName,signInActivity"
+
+    $resp = $null
     try {
-        $resp = Invoke-MgGraphRequest -Method GET -Uri $uri
+        $resp = Invoke-MgGraphRequest -Method GET -Uri $v1Uri
     } catch {
-        # Users could also be referenced by objectId in a sheet; here we rely on UPN.
-        throw "Graph request failed for '$Upn': $($_.Exception.Message)"
+        $v1Error = $_.Exception.Message
+        if ($v1Error -match 'Forbidden') {
+            throw "Forbidden: missing permission/role to read signInActivity. Ensure admin consent for delegated Graph permissions (AuditLog.Read.All, Directory.Read.All, User.Read.All) and assign a role like Reports Reader / Security Reader / Global Reader (or higher) to the signed-in account."
+        }
+        try {
+            $resp = Invoke-MgGraphRequest -Method GET -Uri $betaUri
+        } catch {
+            $betaError = $_.Exception.Message
+            if ($betaError -match 'Forbidden') {
+                throw "Forbidden: missing permission/role to read signInActivity. Ensure admin consent for delegated Graph permissions (AuditLog.Read.All, Directory.Read.All, User.Read.All) and assign a role like Reports Reader / Security Reader / Global Reader (or higher) to the signed-in account."
+            }
+            throw "Graph request failed for '$Upn' (v1.0 then beta): $v1Error | $betaError"
+        }
     }
 
     $last = $null
@@ -275,11 +456,9 @@ function Update-UserlistWithLastLogin {
     }
 
     $columnNames = @($rows[0].PSObject.Properties.Name)
-    $upnCol = Resolve-UpnColumnName -ColumnNames $columnNames
 
-    # Best-effort validation for the requested first column requirement.
     if (-not ($columnNames -contains 'Useraccount')) {
-        Write-Host "Warning: Column 'Useraccount' was not found. The first column should be named 'Useraccount'." -ForegroundColor Yellow
+        throw "Column 'Useraccount' was not found. Please include a 'Useraccount' column (UPN or user id)."
     }
 
     $total = $rows.Count
@@ -287,22 +466,26 @@ function Update-UserlistWithLastLogin {
 
     foreach ($row in $rows) {
         $i++
-        $upn = $row.$upnCol
+        $userAccount = $row.Useraccount
 
         $percent = [math]::Floor(($i / $total) * 100)
         Write-Progress -Activity 'Retrieving last login (Entra ID)' -Status ("$i of $total") -PercentComplete $percent
 
-        if ([string]::IsNullOrWhiteSpace([string]$upn)) {
+        if ([string]::IsNullOrWhiteSpace([string]$userAccount)) {
             $row | Add-Member -NotePropertyName 'LastLoginDate' -NotePropertyValue $null -Force
             continue
         }
 
         try {
-            $last = Get-EntraLastSignInDateTime -Upn ([string]$upn)
+            $last = Get-EntraLastSignInDateTime -Upn ([string]$userAccount)
             $row | Add-Member -NotePropertyName 'LastLoginDate' -NotePropertyValue $last -Force
         } catch {
             $row | Add-Member -NotePropertyName 'LastLoginDate' -NotePropertyValue $null -Force
-            Write-Host "[$i/$total] Could not retrieve last login for '$upn': $($_.Exception.Message)" -ForegroundColor Yellow
+            $errMsg = $_.Exception.Message
+            Write-Host "[$i/$total] Could not retrieve last login for '$userAccount': $errMsg" -ForegroundColor Yellow
+            if ($errMsg -match 'Forbidden: missing permission/role' -or $errMsg -match 'signInActivity is Forbidden') {
+                throw $errMsg
+            }
         }
     }
 
@@ -320,7 +503,18 @@ function Show-MainMenu {
     Write-Host '1) Connect AzAccount (Azure login)'
     Write-Host '2) Connect Microsoft Graph (scopes for last login)'
     Write-Host '3) Update Userlist Excel with LastLoginDate'
-    Write-Host '4) Exit'
+    Write-Host '4) Run full sequence (1 -> 2 -> 3)'
+    Write-Host '5) Exit'
+}
+
+function Invoke-FullSequence {
+    param(
+        [string]$ExcelPath
+    )
+
+    Connect-AzureAz
+    Connect-Graph
+    Update-UserlistWithLastLogin -ExcelPath $ExcelPath
 }
 
 function Start-App {
@@ -328,7 +522,7 @@ function Start-App {
 
     while ($true) {
         Show-MainMenu
-        $choice = (Read-Host 'Choose an option (1-4)').Trim()
+        $choice = (Read-Host 'Choose an option (1-5)').Trim()
 
         switch ($choice) {
             '1' {
@@ -361,6 +555,11 @@ function Start-App {
                 Update-UserlistWithLastLogin -ExcelPath $excelPath
             }
             '4' {
+                # Full sequence uses the script's default Excel resolution logic:
+                # ./Userlist.xlsx, then Downloads, then prompt if not found.
+                Invoke-FullSequence -ExcelPath $null
+            }
+            '5' {
                 break
             }
             default {
@@ -371,7 +570,11 @@ function Start-App {
 }
 
 try {
-    Start-App
+    if ($RunSequence) {
+        Invoke-FullSequence -ExcelPath $ExcelPath
+    } else {
+        Start-App
+    }
 } catch {
     Write-Host ''
     Write-Host "Error: $($_.Exception.Message)" -ForegroundColor Red

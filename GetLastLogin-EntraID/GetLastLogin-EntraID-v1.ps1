@@ -232,9 +232,13 @@ function Connect-Graph {
                 if (Test-PreferDeviceAuthentication) {
                     Write-Host 'Device code sign-in: open https://microsoft.com/devicelogin and enter the displayed code.' -ForegroundColor DarkGray
                     if ($tenantId) {
-                        Connect-MgGraph -Scopes $scopes -UseDeviceCode -TenantId $tenantId -NoWelcome | Out-Null
+                        $deviceCodeInfo = Connect-MgGraph -Scopes $scopes -UseDeviceCode -TenantId $tenantId -NoWelcome
                     } else {
-                        Connect-MgGraph -Scopes $scopes -UseDeviceCode -NoWelcome | Out-Null
+                        $deviceCodeInfo = Connect-MgGraph -Scopes $scopes -UseDeviceCode -NoWelcome
+                    }
+
+                    if ($deviceCodeInfo -and $deviceCodeInfo.Message) {
+                        Write-Host $deviceCodeInfo.Message -ForegroundColor Yellow
                     }
                 } else {
                     if ($tenantId) {

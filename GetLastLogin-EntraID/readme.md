@@ -29,6 +29,8 @@ From the repo root (works on Windows and Linux):
 pwsh -File ./GetLastLogin-EntraID/GetLastLogin-EntraID.ps1
 ```
 
+By default, the script runs the full workflow in one go (Az login + Graph login + Excel update).
+
 Run everything in one go (Connect Az + Connect Graph + Update Excel):
 
 ```powershell
@@ -43,6 +45,10 @@ pwsh -File ./GetLastLogin-EntraID/GetLastLogin-EntraID.ps1 -RunSequence -ExcelPa
 
 Menu (step-by-step):
 
+```powershell
+pwsh -File ./GetLastLogin-EntraID/GetLastLogin-EntraID.ps1 -Menu
+```
+
 1. Connect AzAccount (Azure login)
 2. Connect Microsoft Graph (required for sign-in data)
 3. Update Excel with `LastLoginDate`
@@ -54,4 +60,6 @@ Menu (step-by-step):
 - If a user never signed in, `LastLoginDate` may remain empty.
 - On Linux/headless sessions where a browser cannot be opened, the script prefers **device code** sign-in (`Connect-AzAccount -UseDeviceAuthentication` and `Connect-MgGraph -UseDeviceCode`).
 - For Microsoft Graph, the script first tries to reuse the existing Az session (`Get-AzAccessToken` for `https://graph.microsoft.com`). If that fails, it falls back to device code. If you see a timeout, run option 2 again and complete the device login promptly.
+- If you want to force a fresh Graph sign-in prompt (device code URL + code), use `-ForceGraphReauth`. This bypasses any cached Graph context.
+- If you want to always skip Az-token reuse for Graph (delegated auth only), use `-SkipAzTokenReuse`.
 - The script does not require `Select-MgProfile`. It calls the Graph `v1.0` endpoint first and falls back to `beta` if `signInActivity` isn't available in `v1.0` for your tenant.

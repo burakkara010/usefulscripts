@@ -18,6 +18,15 @@ param(
     # Runs the full workflow in one go: Connect-AzAccount -> Connect-MgGraph -> Update Excel.
     [switch]$RunSequence,
 
+    # Show the interactive menu (step-by-step). If omitted, the script runs the full sequence by default.
+    [switch]$Menu,
+
+    # Force a fresh Microsoft Graph delegated sign-in (device code on Linux/headless), bypassing cached Graph context.
+    [switch]$ForceGraphReauth,
+
+    # Skip trying to reuse the Az token for Microsoft Graph (always use Connect-MgGraph delegated auth).
+    [switch]$SkipAzTokenReuse,
+
     # Optional Excel path. If omitted, the script uses its default search/prompt behavior.
     [string]$ExcelPath
 )
@@ -159,6 +168,20 @@ function Connect-Graph {
 
     Write-SectionHeader 'Step 2: Connect-MgGraph'
 
+    $connectCmd = $null
+    try { $connectCmd = Get-Command Connect-MgGraph -ErrorAction Stop } catch { $connectCmd = $null }
+
+    function Get-ConnectMgGraphExtraParams {
+        $extra = @{}
+        if ($connectCmd -and $connectCmd.Parameters.ContainsKey('ForceRefresh')) {
+            $extra['ForceRefresh'] = $true
+        }
+        if ($connectCmd -and $connectCmd.Parameters.ContainsKey('ContextScope')) {
+            $extra['ContextScope'] = 'Process'
+        }
+        return $extra
+    }
+
     # Note: these scopes typically require admin consent.
     $scopes = @(
         'User.Read.All',
@@ -179,24 +202,79 @@ function Connect-Graph {
     # Best effort: if already connected with Az, reuse that session to obtain a Graph access token.
     # This avoids browser/device-code timeouts in headless environments.
     # Note: if the resulting token cannot access signInActivity (Forbidden), we will fall back to a scoped Connect-MgGraph.
-    if (Get-Command Get-AzAccessToken -ErrorAction SilentlyContinue) {
+    function Convert-SecureStringToPlainText {
+        param(
+            [Parameter(Mandatory = $true)][securestring]$SecureString
+        )
+
+        return [System.Net.NetworkCredential]::new('', $SecureString).Password
+    }
+
+    function Convert-TokenForConnectMgGraph {
+        param(
+            [Parameter(Mandatory = $true)]$Token
+        )
+
+        $accessTokenParamType = $null
+        try {
+            $accessTokenParamType = (Get-Command Connect-MgGraph -ErrorAction Stop).Parameters['AccessToken'].ParameterType
+        } catch {
+            $accessTokenParamType = [string]
+        }
+
+        $expectsSecureString = ($accessTokenParamType -eq [securestring])
+
+        if ($expectsSecureString) {
+            if ($Token -is [securestring]) { return $Token }
+            if ($Token -is [string]) { return (ConvertTo-SecureString -String $Token -AsPlainText -Force) }
+            return (ConvertTo-SecureString -String ([string]$Token) -AsPlainText -Force)
+        }
+
+        if ($Token -is [securestring]) { return (Convert-SecureStringToPlainText -SecureString $Token) }
+        return [string]$Token
+    }
+
+    $skipAzTokenReuseEffective = [bool]$SkipAzTokenReuse
+    if ($ForceGraphReauth) {
+        $skipAzTokenReuseEffective = $true
+    }
+
+    if ($ForceGraphReauth) {
+        Write-Host 'Graph auth: forcing fresh delegated sign-in (bypassing cached context).' -ForegroundColor DarkGray
+        try { Disconnect-MgGraph | Out-Null } catch { }
+    }
+
+    if (-not $skipAzTokenReuseEffective -and (Get-Command Get-AzAccessToken -ErrorAction SilentlyContinue)) {
         try {
             $azCtx2 = Get-AzContext -ErrorAction SilentlyContinue
             if ($azCtx2) {
                 Write-Host 'Trying to connect to Graph using the existing Az session...' -ForegroundColor DarkGray
-                $token = if ($tenantId) {
-                    Get-AzAccessToken -ResourceUrl 'https://graph.microsoft.com' -TenantId $tenantId -AsSecureString
+                $tokenResponse = if ($tenantId) {
+                    Get-AzAccessToken -ResourceUrl 'https://graph.microsoft.com' -TenantId $tenantId
                 } else {
-                    Get-AzAccessToken -ResourceUrl 'https://graph.microsoft.com' -AsSecureString
+                    Get-AzAccessToken -ResourceUrl 'https://graph.microsoft.com'
                 }
 
-                if ($token -and $token.Token) {
-                    Connect-MgGraph -AccessToken $token.Token -NoWelcome | Out-Null
+                if ($tokenResponse -and $tokenResponse.Token) {
+                    $graphAccessToken = Convert-TokenForConnectMgGraph -Token $tokenResponse.Token
+                    Connect-MgGraph -AccessToken $graphAccessToken -NoWelcome | Out-Null
+
+                    try {
+                        Invoke-MgGraphRequest -Method GET -Uri 'https://graph.microsoft.com/v1.0/me?$select=id' | Out-Null
+                    } catch {
+                        $m2 = $_.Exception.Message
+                        if ($m2 -match 'Unauthorized|401|InvalidAuthenticationToken') {
+                            Write-Host 'Az token connected, but Graph calls returned Unauthorized. Falling back to normal Connect-MgGraph...' -ForegroundColor Yellow
+                            try { Disconnect-MgGraph | Out-Null } catch { }
+                        }
+                    }
                 }
             }
         } catch {
             Write-Host ("Az token method failed, falling back to interactive/device code. Details: {0}" -f $_.Exception.Message) -ForegroundColor Yellow
         }
+    } elseif ($skipAzTokenReuseEffective) {
+        Write-Host 'Graph auth: skipping Az token reuse; using delegated Connect-MgGraph.' -ForegroundColor DarkGray
     }
 
     function Test-CanReadSignInActivity {
@@ -211,9 +289,51 @@ function Connect-Graph {
         } catch {
             $m = $_.Exception.Message
             if ($m -match 'Forbidden') { return $false }
+            if ($m -match 'Unauthorized|401|InvalidAuthenticationToken') { return $false }
             # Non-forbidden errors (transient, not found etc.) shouldn't block auth.
             return $true
         }
+    }
+
+    function Get-CurrentGraphScopesString {
+        try {
+            $c = Get-MgContext
+            if ($c -and $c.Scopes) {
+                return (($c.Scopes | Sort-Object -Unique) -join ', ')
+            }
+        } catch {
+            # ignore
+        }
+        return '(unknown)'
+    }
+
+    function Test-CanListUsers {
+        try {
+            Invoke-MgGraphRequest -Method GET -Uri 'https://graph.microsoft.com/v1.0/users?$top=1&$select=id' | Out-Null
+            return $true
+        } catch {
+            $m = $_.Exception.Message
+            if ($m -match 'Forbidden|Unauthorized|401|403|InvalidAuthenticationToken') { return $false }
+            return $true
+        }
+    }
+
+    function Test-CanReadSignInActivityForAnyUser {
+        $urisToTry = @(
+            'https://graph.microsoft.com/beta/users?$top=1&$select=id,signInActivity',
+            'https://graph.microsoft.com/v1.0/users?$top=1&$select=id,signInActivity'
+        )
+        foreach ($u in $urisToTry) {
+            try {
+                Invoke-MgGraphRequest -Method GET -Uri $u | Out-Null
+                return $true
+            } catch {
+                $m = $_.Exception.Message
+                if ($m -match 'Forbidden|Unauthorized|401|403|InvalidAuthenticationToken') { return $false }
+                continue
+            }
+        }
+        return $true
     }
 
     # If we are connected but cannot read signInActivity (Forbidden), disconnect and do a normal connect.
@@ -231,18 +351,22 @@ function Connect-Graph {
             try {
                 if (Test-PreferDeviceAuthentication) {
                     Write-Host 'Device code sign-in: open https://microsoft.com/devicelogin and enter the displayed code.' -ForegroundColor DarkGray
+                    $extra = Get-ConnectMgGraphExtraParams
                     if ($tenantId) {
-                        Connect-MgGraph -Scopes $scopes -UseDeviceCode -TenantId $tenantId -NoWelcome | Out-Null
+                        Connect-MgGraph -Scopes $scopes -UseDeviceCode -TenantId $tenantId -NoWelcome @extra | Out-Null
                     } else {
-                        Connect-MgGraph -Scopes $scopes -UseDeviceCode -NoWelcome | Out-Null
+                        Connect-MgGraph -Scopes $scopes -UseDeviceCode -NoWelcome @extra | Out-Null
                     }
                 } else {
+                    $extra = Get-ConnectMgGraphExtraParams
                     if ($tenantId) {
-                        Connect-MgGraph -Scopes $scopes -TenantId $tenantId -NoWelcome | Out-Null
+                        Connect-MgGraph -Scopes $scopes -TenantId $tenantId -NoWelcome @extra | Out-Null
                     } else {
-                        Connect-MgGraph -Scopes $scopes -NoWelcome | Out-Null
+                        Connect-MgGraph -Scopes $scopes -NoWelcome @extra | Out-Null
                     }
                 }
+
+                Write-Host 'Note: if you were NOT prompted with a device-code URL, Graph likely reused an existing valid cached session (this is OK).' -ForegroundColor DarkGray
 
                 if (-not (Test-CanReadSignInActivity)) {
                     throw 'Forbidden: connected but missing permission/role to read signInActivity.'
@@ -283,6 +407,64 @@ function Connect-Graph {
     $mg = Get-MgContext
     if (-not $mg -or -not $mg.Account) {
         throw 'No Microsoft Graph context found after Connect-MgGraph.'
+    }
+
+    function Get-MissingRequiredScopes {
+        param(
+            [Parameter(Mandatory = $true)][string[]] $RequiredScopes
+        )
+
+        $ctx = $null
+        try { $ctx = Get-MgContext } catch { $ctx = $null }
+        $current = @()
+        if ($ctx -and $ctx.Scopes) { $current = @($ctx.Scopes) }
+
+        $missing = New-Object System.Collections.Generic.List[string]
+        foreach ($rs in $RequiredScopes) {
+            if (-not ($current -contains $rs)) {
+                $missing.Add($rs)
+            }
+        }
+        return @($missing)
+    }
+
+    $missingScopes = Get-MissingRequiredScopes -RequiredScopes $scopes
+    if ($missingScopes.Count -gt 0) {
+        Write-Host ("Graph token is missing required scopes: {0}" -f ($missingScopes -join ', ')) -ForegroundColor Yellow
+        Write-Host 'Re-authenticating to Microsoft Graph with the required scopes...' -ForegroundColor Yellow
+        try { Disconnect-MgGraph | Out-Null } catch { }
+
+        $extra = Get-ConnectMgGraphExtraParams
+        if (Test-PreferDeviceAuthentication) {
+            Write-Host 'Device code sign-in: open https://microsoft.com/devicelogin and enter the displayed code.' -ForegroundColor DarkGray
+            if ($tenantId) {
+                Connect-MgGraph -Scopes $scopes -UseDeviceCode -TenantId $tenantId -NoWelcome @extra | Out-Null
+            } else {
+                Connect-MgGraph -Scopes $scopes -UseDeviceCode -NoWelcome @extra | Out-Null
+            }
+        } else {
+            if ($tenantId) {
+                Connect-MgGraph -Scopes $scopes -TenantId $tenantId -NoWelcome @extra | Out-Null
+            } else {
+                Connect-MgGraph -Scopes $scopes -NoWelcome @extra | Out-Null
+            }
+        }
+
+        $missingScopes = Get-MissingRequiredScopes -RequiredScopes $scopes
+        if ($missingScopes.Count -gt 0) {
+            $scopeStr2 = Get-CurrentGraphScopesString
+            throw "Microsoft Graph connected, but the access token still does not contain the required delegated scopes: $($missingScopes -join ', '). This usually means admin consent was NOT granted for the Microsoft Graph PowerShell client (clientId: 14d82eec-204b-4c2f-b7e8-296a70dab67e) for these scopes in this tenant. Current token scopes: $scopeStr2"
+        }
+    }
+
+    $scopeStr = Get-CurrentGraphScopesString
+    Write-Host ("Graph scopes in token: {0}" -f $scopeStr) -ForegroundColor DarkGray
+
+    if (-not (Test-CanListUsers)) {
+        throw "Connected to Graph, but cannot list users (likely missing User.Read.All / Directory.Read.All delegated permission or required Entra role). Current scopes: $scopeStr"
+    }
+    if (-not (Test-CanReadSignInActivityForAnyUser)) {
+        throw "Connected to Graph, but cannot read signInActivity for users (403). This is typically missing AuditLog.Read.All delegated permission and/or missing Entra role (Reports Reader / Security Reader / Global Reader). Current scopes: $scopeStr"
     }
 
     Write-Host ("Connected to Graph as: {0} (Tenant: {1})" -f $mg.Account, $mg.TenantId) -ForegroundColor Green
@@ -408,15 +590,31 @@ function Get-EntraLastSignInDateTime {
         $resp = Invoke-MgGraphRequest -Method GET -Uri $v1Uri
     } catch {
         $v1Error = $_.Exception.Message
+        if ($v1Error -match 'Unauthorized|401|InvalidAuthenticationToken') {
+            throw "Unauthorized (401): your Microsoft Graph access token is missing/invalid/expired. Re-run option 2 (Connect Microsoft Graph) to re-authenticate, or run with -RunSequence so the script connects with delegated scopes. Details: $v1Error"
+        }
         if ($v1Error -match 'Forbidden') {
-            throw "Forbidden: missing permission/role to read signInActivity. Ensure admin consent for delegated Graph permissions (AuditLog.Read.All, Directory.Read.All, User.Read.All) and assign a role like Reports Reader / Security Reader / Global Reader (or higher) to the signed-in account."
+            $scopeStr = '(unknown)'
+            try {
+                $c2 = Get-MgContext
+                if ($c2 -and $c2.Scopes) { $scopeStr = (($c2.Scopes | Sort-Object -Unique) -join ', ') }
+            } catch { }
+            throw "Forbidden: missing permission/role to read signInActivity. Ensure admin consent for delegated Graph permissions (AuditLog.Read.All, Directory.Read.All, User.Read.All) and assign a role like Reports Reader / Security Reader / Global Reader (or higher) to the signed-in account. Current token scopes: $scopeStr"
         }
         try {
             $resp = Invoke-MgGraphRequest -Method GET -Uri $betaUri
         } catch {
             $betaError = $_.Exception.Message
+            if ($betaError -match 'Unauthorized|401|InvalidAuthenticationToken') {
+                throw "Unauthorized (401): your Microsoft Graph access token is missing/invalid/expired. Re-run option 2 (Connect Microsoft Graph) to re-authenticate, or run with -RunSequence so the script connects with delegated scopes. Details: $betaError"
+            }
             if ($betaError -match 'Forbidden') {
-                throw "Forbidden: missing permission/role to read signInActivity. Ensure admin consent for delegated Graph permissions (AuditLog.Read.All, Directory.Read.All, User.Read.All) and assign a role like Reports Reader / Security Reader / Global Reader (or higher) to the signed-in account."
+                $scopeStr = '(unknown)'
+                try {
+                    $c3 = Get-MgContext
+                    if ($c3 -and $c3.Scopes) { $scopeStr = (($c3.Scopes | Sort-Object -Unique) -join ', ') }
+                } catch { }
+                throw "Forbidden: missing permission/role to read signInActivity. Ensure admin consent for delegated Graph permissions (AuditLog.Read.All, Directory.Read.All, User.Read.All) and assign a role like Reports Reader / Security Reader / Global Reader (or higher) to the signed-in account. Current token scopes: $scopeStr"
             }
             throw "Graph request failed for '$Upn' (v1.0 then beta): $v1Error | $betaError"
         }
@@ -539,15 +737,9 @@ function Start-App {
                     Write-Host 'You are not connected to Graph yet (option 2). This is required.' -ForegroundColor Yellow
                 }
 
-                # If Graph is not connected yet, connect now.
-                try {
-                    $ctx = Get-MgContext
-                    if (-not $ctx -or -not $ctx.Account) {
-                        Connect-Graph
-                    }
-                } catch {
-                    Connect-Graph
-                }
+                # Always ensure we have a Graph token that can read signInActivity.
+                # (A previous MgContext may exist with different scopes, causing Forbidden later.)
+                Connect-Graph
 
                 $excelPath = Read-Host 'Excel path (Enter for default search: Userlist.xlsx)'
                 if ([string]::IsNullOrWhiteSpace($excelPath)) { $excelPath = $null }
@@ -570,10 +762,10 @@ function Start-App {
 }
 
 try {
-    if ($RunSequence) {
-        Invoke-FullSequence -ExcelPath $ExcelPath
-    } else {
+    if ($Menu) {
         Start-App
+    } else {
+        Invoke-FullSequence -ExcelPath $ExcelPath
     }
 } catch {
     Write-Host ''

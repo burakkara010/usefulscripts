@@ -2,7 +2,9 @@
 
 This script retrieves the **last login (lastSignInDateTime)** for users in **Microsoft Entra ID** and writes it back to the same Excel sheet in a new column **LastLoginDate**.
 
-## Requirements
+## Requirements (exact)
+
+### 1) Local/runtime requirements
 
 - PowerShell 7+ (`pwsh`)
 - PowerShell modules:
@@ -11,6 +13,33 @@ This script retrieves the **last login (lastSignInDateTime)** for users in **Mic
   - `ImportExcel`
 
 The script can install these modules automatically from PSGallery (with confirmation).
+
+### 2) Linux dependencies (recommended)
+
+On Linux, `ImportExcel` can run without these, but **auto-size** requires additional native libraries.
+
+If you see: `WARNING: ImportExcel Module Cannot Autosize...`, install:
+
+```bash
+sudo apt-get -y update && sudo apt-get install -y --no-install-recommends libgdiplus libc6-dev
+```
+
+### 3) Entra ID / Microsoft Graph requirements (needed for last login)
+
+To read `signInActivity` / last sign-in timestamps for *other users*, you need BOTH:
+
+- **Delegated Graph scopes in the access token** (admin consent typically required):
+  - `AuditLog.Read.All` (required)
+  - `Directory.Read.All`
+  - `User.Read.All`
+
+- **An active Entra directory role at token-issue time** (often via PIM), e.g.:
+  - `Global Reader` (commonly sufficient)
+  - or `Reports Reader` / `Security Reader` (or higher)
+
+Important: Microsoft Graph CLI (`mgc`) permissions are separate from Microsoft Graph PowerShell (`Connect-MgGraph`).
+This script authenticates via Microsoft Graph PowerShell (default clientId: `14d82eec-204b-4c2f-b7e8-296a70dab67e`).
+Admin consent must be granted for that client (or you must use a custom app registration).
 
 ## Excel input
 
@@ -64,3 +93,18 @@ pwsh -File ./GetLastLogin-EntraID-v1.ps1 -Menu
 - If you want to always skip Az-token reuse for Graph (delegated auth only), use `-SkipAzTokenReuse`.
 - If you suspect Graph keeps reusing a cached token with the wrong scopes, run with `-ClearMsalCache` (this clears the local IdentityService MSAL cache and forces device-code sign-in again).
 - The script does not require `Select-MgProfile`. It calls the Graph `v1.0` endpoint first and falls back to `beta` if `signInActivity` isn't available in `v1.0` for your tenant.
+
+## Quick troubleshooting
+
+- **Error: token is missing required delegated scopes (especially `AuditLog.Read.All`)**
+  - Ask a Global Admin to grant admin consent for delegated Microsoft Graph permissions (`AuditLog.Read.All`, `Directory.Read.All`, `User.Read.All`) to the Microsoft Graph PowerShell clientId `14d82eec-204b-4c2f-b7e8-296a70dab67e` in your tenant.
+  - Then re-run with: `-ForceGraphReauth -ClearMsalCache`.
+
+- **MSAL deserialization / cache parse errors**
+  - Run with `-ClearMsalCache` to rebuild the local token cache.
+
+- **Rows show `User not found`**
+  - The value in the Excel `Useraccount` column did not match any Entra user (UPN/objectId is best).
+
+- **Rows show `signInActivity doesn't exist`**
+  - The Graph response did not include the `signInActivity` property for that query/profile/tenant behavior. The script uses beta fallback, but tenants/policies can still block it.

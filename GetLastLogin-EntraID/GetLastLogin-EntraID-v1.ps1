@@ -27,6 +27,11 @@ param(
     # Skip trying to reuse the Az token for Microsoft Graph (always use Connect-MgGraph delegated auth).
     [switch]$SkipAzTokenReuse,
 
+    # Clears the local MSAL token cache BEFORE Microsoft Graph authentication.
+    # Useful when cached tokens keep coming back without the required delegated scopes.
+    # NOTE: this will force an interactive/device-code sign-in again.
+    [switch]$ClearMsalCache,
+
     # Optional Excel path. If omitted, the script uses its default search/prompt behavior.
     [string]$ExcelPath
 )
@@ -73,6 +78,110 @@ function Ensure-PowerShellModule([string]$Name) {
         Install-Module -Name $Name -Scope CurrentUser -Force -AllowClobber
     } catch {
         throw "Failed to install module '$Name': $($_.Exception.Message)"
+    }
+}
+
+function Get-GraphScopesString {
+    try {
+        $c = Get-MgContext -ErrorAction SilentlyContinue
+        if ($c -and $c.Scopes) {
+            return (($c.Scopes | Sort-Object -Unique) -join ', ')
+        }
+    } catch {
+        # ignore
+    }
+    return '(unknown)'
+}
+
+function Get-MissingGraphScopes {
+    param(
+        [Parameter(Mandatory = $true)][string[]]$RequiredScopes
+    )
+
+    $ctx = $null
+    try { $ctx = Get-MgContext -ErrorAction SilentlyContinue } catch { $ctx = $null }
+    $current = @()
+    if ($ctx -and $ctx.Scopes) { $current = @($ctx.Scopes) }
+
+    $missing = New-Object System.Collections.Generic.List[string]
+    foreach ($rs in $RequiredScopes) {
+        if (-not ($current -contains $rs)) {
+            $missing.Add($rs)
+        }
+    }
+    return $missing.ToArray()
+}
+
+function Get-ActiveEntraDirectoryRolesForSignedInUser {
+    # Best-effort check for PIM/role activation.
+    # Returns $null if we cannot query roles (insufficient perms), else returns an array (possibly empty).
+    try {
+        $uri = 'https://graph.microsoft.com/v1.0/me/memberOf/microsoft.graph.directoryRole?$select=displayName&$top=999'
+        $resp = Invoke-MgGraphRequest -Method GET -Uri $uri -ErrorAction Stop
+        $names = @()
+        if ($resp -and $resp.value) {
+            foreach ($r in $resp.value) {
+                if ($r.displayName) { $names += [string]$r.displayName }
+            }
+        }
+        return @($names | Sort-Object -Unique)
+    } catch {
+        $m = $_.Exception.Message
+        if ($m -match 'Forbidden|Unauthorized|401|403|InvalidAuthenticationToken') {
+            return $null
+        }
+        return $null
+    }
+}
+
+function Assert-GraphSignInActivityRequirements {
+    param(
+        [Parameter(Mandatory = $true)][string[]]$RequiredScopes
+    )
+
+    $ctx = $null
+    try { $ctx = Get-MgContext -ErrorAction SilentlyContinue } catch { $ctx = $null }
+    if (-not $ctx -or -not $ctx.Account) {
+        throw 'Microsoft Graph is not connected (no context). Run Step 2 (Connect-MgGraph) first.'
+    }
+
+    $missingScopes = Get-MissingGraphScopes -RequiredScopes $RequiredScopes
+    if (@($missingScopes).Count -gt 0) {
+        $scopeStr = Get-GraphScopesString
+        throw "Microsoft Graph token is missing required delegated scopes: $($missingScopes -join ', '). Current token scopes: $scopeStr"
+    }
+
+    $roles = Get-ActiveEntraDirectoryRolesForSignedInUser
+    $acceptedRoleRegex = 'Global Reader|Reports Reader|Security Reader|Global Administrator|Security Administrator|Reports Administrator'
+
+    if ($roles -ne $null) {
+        $hasAcceptedRole = $false
+        foreach ($rn in $roles) {
+            if ($rn -match $acceptedRoleRegex) {
+                $hasAcceptedRole = $true
+                break
+            }
+        }
+        if (-not $hasAcceptedRole) {
+            $rolesStr = if (@($roles).Count -gt 0) { (@($roles) -join ', ') } else { '(none detected)' }
+            throw "Your account is connected to Graph, but no active Entra directory role was detected that typically allows reading signInActivity. Activate an appropriate role via PIM (e.g., Global Reader / Reports Reader / Security Reader) and then re-run Step 2 with -ForceGraphReauth so a new token is issued. Active directory roles detected: $rolesStr"
+        }
+    } else {
+        # Could not verify roles (insufficient permission to read role memberships). We'll rely on the actual API preflight below.
+        Write-Host 'Note: could not verify active directory roles via Graph (insufficient permission). Proceeding with signInActivity API preflight...' -ForegroundColor DarkGray
+    }
+
+    # Definitive preflight: must be able to read signInActivity for users.
+    try {
+        Invoke-MgGraphRequest -Method GET -Uri 'https://graph.microsoft.com/beta/users?$top=1&$select=id,signInActivity' -ErrorAction Stop | Out-Null
+    } catch {
+        $m = $_.Exception.Message
+        if ($m -match 'Forbidden|Unauthorized|401|403|InvalidAuthenticationToken') {
+            $scopeStr = Get-GraphScopesString
+            $rolesStr2 = '(not checked)'
+            if ($roles -ne $null) { $rolesStr2 = if (@($roles).Count -gt 0) { (@($roles) -join ', ') } else { '(none detected)' } }
+            throw "Connected to Microsoft Graph, but cannot read users' signInActivity (403/401). Ensure (1) admin consent was granted for delegated permissions AuditLog.Read.All + Directory.Read.All + User.Read.All for the Microsoft Graph PowerShell client (clientId: 14d82eec-204b-4c2f-b7e8-296a70dab67e), and (2) your Entra role was ACTIVE at token-issue time (PIM) before you signed in. Current scopes: $scopeStr. Active directory roles: $rolesStr2. Details: $m"
+        }
     }
 }
 
@@ -143,14 +252,45 @@ function Connect-AzureAz {
     Import-Module Az.Accounts -ErrorAction Stop
 
     Write-SectionHeader 'Step 1: Connect-AzAccount'
+
+    if ($ClearMsalCache) {
+        Write-Host 'Az auth: clearing local MSAL token cache before authentication...' -ForegroundColor Yellow
+        Clear-LocalMsalTokenCache
+    }
+
     if (Test-PreferDeviceAuthentication) {
-        Connect-AzAccount -UseDeviceAuthentication | Out-Null
+        try {
+            Connect-AzAccount -UseDeviceAuthentication | Out-Null
+        } catch {
+            $m = $_.Exception.Message
+            if (Test-IsMsalCacheDeserializationError -Message $m) {
+                Write-Host 'Azure login failed due to a local MSAL token cache parsing error.' -ForegroundColor Yellow
+                Write-Host 'Clearing the local MSAL cache and retrying Azure device login...' -ForegroundColor Yellow
+                Clear-LocalMsalTokenCache
+                Connect-AzAccount -UseDeviceAuthentication | Out-Null
+            } else {
+                throw
+            }
+        }
     } else {
         try {
             Connect-AzAccount | Out-Null
         } catch {
-            Write-Host 'Interactive login failed, trying device login...' -ForegroundColor Yellow
-            Connect-AzAccount -UseDeviceAuthentication | Out-Null
+            $m = $_.Exception.Message
+            if (Test-IsMsalCacheDeserializationError -Message $m) {
+                Write-Host 'Azure login failed due to a local MSAL token cache parsing error.' -ForegroundColor Yellow
+                Write-Host 'Clearing the local MSAL cache and retrying login...' -ForegroundColor Yellow
+                Clear-LocalMsalTokenCache
+                try {
+                    Connect-AzAccount | Out-Null
+                } catch {
+                    Write-Host 'Interactive login failed, trying device login...' -ForegroundColor Yellow
+                    Connect-AzAccount -UseDeviceAuthentication | Out-Null
+                }
+            } else {
+                Write-Host 'Interactive login failed, trying device login...' -ForegroundColor Yellow
+                Connect-AzAccount -UseDeviceAuthentication | Out-Null
+            }
         }
     }
 
@@ -167,6 +307,12 @@ function Connect-Graph {
     Import-Module Microsoft.Graph.Authentication -ErrorAction Stop
 
     Write-SectionHeader 'Step 2: Connect-MgGraph'
+
+    if ($ClearMsalCache) {
+        Write-Host 'Graph auth: clearing local MSAL token cache before authentication...' -ForegroundColor Yellow
+        try { Disconnect-MgGraph -ErrorAction SilentlyContinue | Out-Null } catch { }
+        Clear-LocalMsalTokenCache
+    }
 
     $connectCmd = $null
     try { $connectCmd = Get-Command Connect-MgGraph -ErrorAction Stop } catch { $connectCmd = $null }
@@ -334,45 +480,58 @@ function Connect-Graph {
         )
         foreach ($u in $urisToTry) {
             try {
-                Invoke-MgGraphRequest -Method GET -Uri $u | Out-Null
+                $resp = Invoke-MgGraphRequest -Method GET -Uri $u -ErrorAction Stop
+
+                # If we can successfully execute this query, we consider signInActivity readable.
+                # The property may be null (never signed in), but the call itself must succeed.
+                $values = @()
+                if ($resp -and $resp.value) { $values = @($resp.value) }
+
+                if ($values.Count -ge 1) {
+                    $first = $values[0]
+                    if ($first -and ($first.PSObject.Properties.Name -contains 'signInActivity')) {
+                        return $true
+                    }
+                }
+
+                # Some tenants may return empty lists depending on directory conditions/filters.
+                # A successful call still indicates permission.
                 return $true
             } catch {
                 $m = $_.Exception.Message
                 if ($m -match 'Forbidden|Unauthorized|401|403|InvalidAuthenticationToken') { return $false }
                 # If endpoint doesn't support signInActivity, try next.
+                if ($m -match 'signInActivity' -and $m -match 'does not exist|Could not find a property|Property') {
+                    continue
+                }
                 continue
             }
         }
-        return $true
+        return $false
     }
 
     # If we are connected but cannot read signInActivity (Forbidden), disconnect and do a normal connect.
     $mgExisting = $null
     try { $mgExisting = Get-MgContext } catch { $mgExisting = $null }
-    if (($mgExisting -and $mgExisting.Account) -and (-not (Test-CanReadSignInActivity))) {
+    if ($mgExisting -and (-not (Test-CanReadSignInActivity))) {
         Write-Host 'Connected to Graph, but token cannot access sign-in activity (Forbidden). Re-authenticating with requested scopes...' -ForegroundColor Yellow
-        try { Disconnect-MgGraph | Out-Null } catch { }
+        try { Disconnect-MgGraph -ErrorAction SilentlyContinue | Out-Null } catch { }
         $mgExisting = $null
     }
 
-    if (-not ($mgExisting -and $mgExisting.Account)) {
+    if (-not $mgExisting) {
         $maxAttempts = 3
         for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
             try {
+                $extra = Get-ConnectMgGraphExtraParams
                 if (Test-PreferDeviceAuthentication) {
-                    Write-Host 'Device code sign-in: open https://microsoft.com/devicelogin and enter the displayed code.' -ForegroundColor DarkGray
-                    $extra = Get-ConnectMgGraphExtraParams
+                    Write-Host 'Starting device code sign-in flow...' -ForegroundColor DarkGray
                     if ($tenantId) {
-                        $deviceCodeInfo = Connect-MgGraph -Scopes $scopes -UseDeviceCode -TenantId $tenantId -NoWelcome @extra
+                        Connect-MgGraph -Scopes $scopes -UseDeviceCode -TenantId $tenantId -NoWelcome @extra
                     } else {
-                        $deviceCodeInfo = Connect-MgGraph -Scopes $scopes -UseDeviceCode -NoWelcome @extra
-                    }
-
-                    if ($deviceCodeInfo -and $deviceCodeInfo.Message) {
-                        Write-Host $deviceCodeInfo.Message -ForegroundColor Yellow
+                        Connect-MgGraph -Scopes $scopes -UseDeviceCode -NoWelcome @extra
                     }
                 } else {
-                    $extra = Get-ConnectMgGraphExtraParams
                     if ($tenantId) {
                         Connect-MgGraph -Scopes $scopes -TenantId $tenantId -NoWelcome @extra | Out-Null
                     } else {
@@ -380,7 +539,10 @@ function Connect-Graph {
                     }
                 }
 
-                Write-Host 'Note: if you were NOT prompted with a device-code URL, Graph likely reused an existing valid cached session (this is OK).' -ForegroundColor DarkGray
+                $mgContextAfter = Get-MgContext
+                if (-not $mgContextAfter) {
+                    throw 'No Graph context found after Connect-MgGraph.'
+                }
 
                 if (-not (Test-CanReadSignInActivity)) {
                     throw 'Forbidden: connected but missing permission/role to read signInActivity.'
@@ -439,7 +601,7 @@ function Connect-Graph {
                 $missing.Add($rs)
             }
         }
-        return @($missing)
+        return $missing.ToArray()
     }
 
     # If a prior Graph session exists, it might not include the requested scopes.
@@ -469,7 +631,7 @@ function Connect-Graph {
         $missingScopes = Get-MissingRequiredScopes -RequiredScopes $scopes
         if ($missingScopes.Count -gt 0) {
             $scopeStr2 = Get-CurrentGraphScopesString
-            throw "Microsoft Graph connected, but the access token still does not contain the required delegated scopes: $($missingScopes -join ', '). This usually means admin consent was NOT granted for the Microsoft Graph PowerShell client (clientId: 14d82eec-204b-4c2f-b7e8-296a70dab67e) for these scopes in this tenant. Current token scopes: $scopeStr2"
+            throw "Microsoft Graph connected, but the access token still does not contain the required delegated scopes: $($missingScopes -join ', '). This usually means admin consent was NOT granted for the Microsoft Graph PowerShell client (clientId: 14d82eec-204b-4c2f-b7e8-296a70dab67e) for these scopes in this tenant. If you believe consent is already in place, try re-running with -ForceGraphReauth -ClearMsalCache to prevent cached tokens being reused. Current token scopes: $scopeStr2"
         }
     }
 
@@ -481,8 +643,11 @@ function Connect-Graph {
         throw "Connected to Graph, but cannot list users (likely missing User.Read.All / Directory.Read.All delegated permission or required Entra role). Current scopes: $scopeStr"
     }
     if (-not (Test-CanReadSignInActivityForAnyUser)) {
-        throw "Connected to Graph, but cannot read signInActivity for users (403). This is typically missing AuditLog.Read.All delegated permission and/or missing Entra role (Reports Reader / Security Reader / Global Reader). Current scopes: $scopeStr"
+        throw "Connected to Graph, but cannot read signInActivity for users (403). This usually means one of: (1) admin consent was not granted for delegated permissions AuditLog.Read.All + Directory.Read.All + User.Read.All for the Microsoft Graph PowerShell client (clientId: 14d82eec-204b-4c2f-b7e8-296a70dab67e) in this tenant, and/or (2) your Entra admin role (Reports Reader / Security Reader / Global Reader) was not active at the time you authenticated (PIM). Note: having Microsoft Graph CLI (mgc) installed/working does NOT affect Connect-MgGraph tokens; they are different clients. Current scopes: $scopeStr"
     }
+
+    # Explicit requirements check (scopes + role + definitive API preflight).
+    Assert-GraphSignInActivityRequirements -RequiredScopes $scopes
 
     Write-Host ("Connected to Graph as: {0} (Tenant: {1})" -f $mg.Account, $mg.TenantId) -ForegroundColor Green
 }
@@ -616,7 +781,7 @@ function Get-EntraLastSignInDateTime {
                 $c2 = Get-MgContext
                 if ($c2 -and $c2.Scopes) { $scopeStr = (($c2.Scopes | Sort-Object -Unique) -join ', ') }
             } catch { }
-            throw "Forbidden: missing permission/role to read signInActivity. Ensure admin consent for delegated Graph permissions (AuditLog.Read.All, Directory.Read.All, User.Read.All) and assign a role like Reports Reader / Security Reader / Global Reader (or higher) to the signed-in account. Current token scopes: $scopeStr"
+            throw "Forbidden: cannot read signInActivity. Ensure admin consent for delegated Graph permissions (AuditLog.Read.All, Directory.Read.All, User.Read.All) for the Microsoft Graph PowerShell client (clientId: 14d82eec-204b-4c2f-b7e8-296a70dab67e) AND ensure your Entra role (Reports Reader / Security Reader / Global Reader) was active when you authenticated (PIM). Re-run Step 2 with -ForceGraphReauth (and optionally clear MSAL cache) after activating the role. Current token scopes: $scopeStr"
         }
         try {
             $resp = Invoke-MgGraphRequest -Method GET -Uri $betaUri
@@ -631,7 +796,7 @@ function Get-EntraLastSignInDateTime {
                     $c3 = Get-MgContext
                     if ($c3 -and $c3.Scopes) { $scopeStr = (($c3.Scopes | Sort-Object -Unique) -join ', ') }
                 } catch { }
-                throw "Forbidden: missing permission/role to read signInActivity. Ensure admin consent for delegated Graph permissions (AuditLog.Read.All, Directory.Read.All, User.Read.All) and assign a role like Reports Reader / Security Reader / Global Reader (or higher) to the signed-in account. Current token scopes: $scopeStr"
+                throw "Forbidden: cannot read signInActivity. Ensure admin consent for delegated Graph permissions (AuditLog.Read.All, Directory.Read.All, User.Read.All) for the Microsoft Graph PowerShell client (clientId: 14d82eec-204b-4c2f-b7e8-296a70dab67e) AND ensure your Entra role (Reports Reader / Security Reader / Global Reader) was active when you authenticated (PIM). Re-run Step 2 with -ForceGraphReauth (and optionally clear MSAL cache) after activating the role. Current token scopes: $scopeStr"
             }
             throw "Graph request failed for '$Upn' (v1.0 then beta): $v1Error | $betaError"
         }
@@ -654,6 +819,17 @@ function Update-UserlistWithLastLogin {
     Import-Module ImportExcel -ErrorAction Stop
 
     Write-SectionHeader 'Step 3: Read Excel and populate LastLoginDate'
+
+    # If the user ran Step 3 directly (menu mode), ensure Graph is connected.
+    $mgCtx = $null
+    try { $mgCtx = Get-MgContext } catch { $mgCtx = $null }
+    if (-not $mgCtx -or -not $mgCtx.Account) {
+        Write-Host 'Microsoft Graph is not connected yet; connecting now...' -ForegroundColor Yellow
+        Connect-Graph
+    }
+
+    # Fail fast: ensure Graph token+role are actually sufficient to read signInActivity.
+    Assert-GraphSignInActivityRequirements -RequiredScopes @('User.Read.All','Directory.Read.All','AuditLog.Read.All')
 
     $path = Resolve-ExcelPath -ExcelPath $ExcelPath
 
@@ -695,10 +871,33 @@ function Update-UserlistWithLastLogin {
             $last = Get-EntraLastSignInDateTime -Upn ([string]$userAccount)
             $row | Add-Member -NotePropertyName 'LastLoginDate' -NotePropertyValue $last -Force
         } catch {
-            $row | Add-Member -NotePropertyName 'LastLoginDate' -NotePropertyValue $null -Force
             $errMsg = $_.Exception.Message
+
+            $isUserNotFound = (
+                $errMsg -match 'Request_ResourceNotFound' -or
+                $errMsg -match 'ResourceNotFound' -or
+                $errMsg -match 'not found' -or
+                $errMsg -match 'does not exist' -or
+                $errMsg -match '404'
+            )
+
+            $isSignInActivityMissing = (
+                $errMsg -match "The property 'signInActivity' cannot be found" -or
+                $errMsg -match 'Could not find a property named' -or
+                $errMsg -match 'does not exist on type' -or
+                ($errMsg -match 'signInActivity' -and $errMsg -match 'cannot be found')
+            )
+
+            if ($isUserNotFound) {
+                $row | Add-Member -NotePropertyName 'LastLoginDate' -NotePropertyValue 'User not found' -Force
+            } elseif ($isSignInActivityMissing) {
+                $row | Add-Member -NotePropertyName 'LastLoginDate' -NotePropertyValue "signInActivity doesn't exist" -Force
+            } else {
+                $row | Add-Member -NotePropertyName 'LastLoginDate' -NotePropertyValue $null -Force
+            }
+
             Write-Host "[$i/$total] Could not retrieve last login for '$userAccount': $errMsg" -ForegroundColor Yellow
-            if ($errMsg -match 'Forbidden: missing permission/role' -or $errMsg -match 'signInActivity is Forbidden') {
+            if (($errMsg -match 'Forbidden' -and $errMsg -match 'signInActivity') -or $errMsg -match 'Forbidden: missing permission/role' -or $errMsg -match 'signInActivity is Forbidden') {
                 throw $errMsg
             }
         }

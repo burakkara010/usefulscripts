@@ -26,7 +26,7 @@ The script looks up each user using the value in the `Useraccount` column (UPN o
 From the repo root (works on Windows and Linux):
 
 ```powershell
-pwsh -File ./GetLastLogin-EntraID/GetLastLogin-EntraID.ps1
+pwsh -File ./GetLastLogin-EntraID-v1.ps1
 ```
 
 By default, the script runs the full workflow in one go (Az login + Graph login + Excel update).
@@ -34,19 +34,19 @@ By default, the script runs the full workflow in one go (Az login + Graph login 
 Run everything in one go (Connect Az + Connect Graph + Update Excel):
 
 ```powershell
-pwsh -File ./GetLastLogin-EntraID/GetLastLogin-EntraID.ps1 -RunSequence
+pwsh -File ./GetLastLogin-EntraID-v1.ps1 -RunSequence
 ```
 
 If you want a specific file path:
 
 ```powershell
-pwsh -File ./GetLastLogin-EntraID/GetLastLogin-EntraID.ps1 -RunSequence -ExcelPath ./Userlist.xlsx
+pwsh -File ./GetLastLogin-EntraID-v1.ps1 -RunSequence -ExcelPath ./Userlist.xlsx
 ```
 
 Menu (step-by-step):
 
 ```powershell
-pwsh -File ./GetLastLogin-EntraID/GetLastLogin-EntraID.ps1 -Menu
+pwsh -File ./GetLastLogin-EntraID-v1.ps1 -Menu
 ```
 
 1. Connect AzAccount (Azure login)
@@ -62,4 +62,5 @@ pwsh -File ./GetLastLogin-EntraID/GetLastLogin-EntraID.ps1 -Menu
 - For Microsoft Graph, the script first tries to reuse the existing Az session (`Get-AzAccessToken` for `https://graph.microsoft.com`). If that fails, it falls back to device code. If you see a timeout, run option 2 again and complete the device login promptly.
 - If you want to force a fresh Graph sign-in prompt (device code URL + code), use `-ForceGraphReauth`. This bypasses any cached Graph context.
 - If you want to always skip Az-token reuse for Graph (delegated auth only), use `-SkipAzTokenReuse`.
+- If you suspect Graph keeps reusing a cached token with the wrong scopes, run with `-ClearMsalCache` (this clears the local IdentityService MSAL cache and forces device-code sign-in again).
 - The script does not require `Select-MgProfile`. It calls the Graph `v1.0` endpoint first and falls back to `beta` if `signInActivity` isn't available in `v1.0` for your tenant.
